@@ -2,58 +2,54 @@ require 'authme'
 require 'test/unit'
 require 'rack/test'
 require 'shoulda'
+require 'json'
 
-ENV['RACK_ENV'] = 'test'
-
-class MockApp < Sinatra::Base
-  get '/' do; 'hi'; end
-end
-
-def rack_app(extra = "use Authme::Middleware")
-  Rack::Builder.new do
-    use Rack::Lint
-    eval(extra)
-    run MockApp
-  end
-end
-
-class TestBasics < Test::Unit::TestCase
-  include Rack::Test::Methods
-
-  def app
-    rack_app
+class TestAuthme < Test::Unit::TestCase
+  def app(extra)
+    Rack::Builder.new do
+      eval extra
+      use Rack::Lint
+      run lambda {|env| [200, {'Content-Type' => 'text/plain'}, [env.to_json]]}
+    end
   end
 
-  should "should say hi" do
-    get '/'
-    assert_equal 'hi', last_response.body
+  def request(extra = nil)
+    Rack::MockRequest.new(app(extra || "use Authme::Middleware"))
   end
 
-  should "add headers" do
-    get '/'
-    raise last_response.headers.inspect
-    assert last_response.headers.has_key?("AUTHME_AUTHED")
+  context "basics" do
+    should "see the header in later apps" do
+      response = request.get '/'
+      assert_equal 'false', JSON.parse(response.body)["AUTHME_AUTHED"]
+    end
+
+    should "not see the header after the request" do
+      response = request.get '/'
+      assert !response.headers.include?("AUTHME_AUTHED")
+    end
   end
 
-  #should "auth if the right headers exist" do
-  #end
-end
+  context "authentication" do
+    setup do
+      extra = "use Authme::Middleware, {:foo => {:pass => 'bar'}}"
+      @req = request(extra)
+      @response = @req.post '/auth', :input => "user=foo&pass=bar"
+    end
 
-class TestAuth < Test::Unit::TestCase
-  include Rack::Test::Methods
+    should "get urls" do
+      response = request.get '/authfoo'
+      assert_equal 'hi there', response.body
+    end
 
-  def app
-    rack_app(%q{use Authme::Middleware, {:a => {:pass => "foo"}}})
+    should "auth users" do
+      assert_equal 302, @response.status
+      assert @response["Set-Cookie"].match(/rack.session=/)
+    end
+
+    should "set headers for authed users" do
+      response = @req.get("/", {"HTTP_COOKIE" => @response["Set-Cookie"]})
+      assert_equal "foo", JSON.parse(response.body)["AUTHME_USER"]
+    end
   end
-
-  should "get through" do
-    get '/authfoo'
-    assert_equal 'hi there', last_response.body
-  end
-
-  #should "validate" do
-  #  post '/auth', {:username => "a", :password => "foo"}
-  #  assert_equal "a", last_response.headers["AUTHME_USER"]
-  #end
 end
 
